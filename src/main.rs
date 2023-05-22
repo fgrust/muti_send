@@ -26,6 +26,8 @@ enum CustomError {
     CalculationFailure,
     #[error("Insufficient balance")]
     InsufficientBalance,
+    #[error("Invalid input {0}")]
+    InvalidInput(String),
 }
 
 // A user can submit a `MultiSend` transaction (similar to bank.MultiSend in cosmos sdk) to transfer multiple
@@ -42,12 +44,20 @@ struct MultiSend {
 }
 
 impl MultiSend {
-    fn validate_inout(&self, definition: &DenomDefinition) -> Result<(), CustomError> {
-        let input_sum = self.inputs.get_coin_sum(&definition.denom);
-        let output_sum = self.outputs.get_coin_sum(&definition.denom);
+    fn validate_inout(&self, definitions: &[DenomDefinition]) -> Result<(), CustomError> {
+        let denoms: Vec<&str> = definitions.iter().map(|d| d.denom.as_str()).collect();
 
-        if input_sum != output_sum {
-            return Err(CustomError::InOutMismatch);
+        // check if the denoms inside inputs/outputs are existing in definitions.
+        self.inputs.check_denoms(&denoms)?;
+        self.outputs.check_denoms(&denoms)?;
+
+        for definition in definitions {
+            let input_sum = self.inputs.try_get_coin_sum(&definition.denom)?;
+            let output_sum = self.outputs.try_get_coin_sum(&definition.denom)?;
+
+            if input_sum != output_sum {
+                return Err(CustomError::InOutMismatch);
+            }
         }
 
         Ok(())
@@ -135,8 +145,9 @@ impl MultiSend {
         definitions: &[DenomDefinition],
         changes: &mut HashMap<(String, String), i128>,
     ) -> Result<(), CustomError> {
+        self.validate_inout(definitions)?;
+
         for definition in definitions {
-            self.validate_inout(definition)?;
             self.process_input(definition, changes)?;
             self.process_output(definition, changes);
         }
@@ -167,6 +178,21 @@ struct Balance {
     coins: Vec<Coin>,
 }
 
+impl Balance {
+    fn check_denoms(&self, denoms: &[&str]) -> Result<(), CustomError> {
+        self.coins.iter().try_for_each(|coin| {
+            if !denoms.contains(&coin.denom.as_str()) {
+                Err(CustomError::InvalidInput(format!(
+                    "denom `{}` not found.",
+                    coin.denom
+                )))
+            } else {
+                Ok(())
+            }
+        })
+    }
+}
+
 impl CoinOp for Balance {
     fn find_coin(&self, denom: &str) -> Option<&Coin> {
         self.coins.find_coin(denom)
@@ -174,17 +200,27 @@ impl CoinOp for Balance {
 }
 
 trait BalanceOp {
-    fn get_coin_sum(&self, denom: &str) -> i128;
+    fn try_get_coin_sum(&self, denom: &str) -> Result<i128, CustomError>;
 
     fn get_filtered_coin_sum(&self, skip_denom: &DenomDefinition) -> i128;
+
+    fn check_denoms(&self, denoms: &[&str]) -> Result<(), CustomError>;
 }
 
 impl BalanceOp for Vec<Balance> {
-    fn get_coin_sum(&self, denom: &str) -> i128 {
+    fn try_get_coin_sum(&self, denom: &str) -> Result<i128, CustomError> {
         self.iter()
             .filter_map(|balance| balance.find_coin(denom))
-            .map(|coin| coin.amount)
-            .sum()
+            .try_fold(0i128, |mut acc, coin| {
+                if coin.amount > 0 {
+                    acc += coin.amount
+                } else {
+                    return Err(CustomError::InvalidInput(
+                        "coin amount must be positive".to_string(),
+                    ));
+                }
+                Ok(acc)
+            })
     }
 
     fn get_filtered_coin_sum(&self, skip_denom: &DenomDefinition) -> i128 {
@@ -198,6 +234,11 @@ impl BalanceOp for Vec<Balance> {
             })
             .map(|coin| coin.amount)
             .sum()
+    }
+
+    fn check_denoms(&self, denoms: &[&str]) -> Result<(), CustomError> {
+        self.iter()
+            .try_for_each(|balance| balance.check_denoms(denoms))
     }
 }
 
@@ -602,4 +643,160 @@ fn test_rounding_up() {
         .unwrap();
 
     assert!(issuer_account_a.coins[0].amount == 2);
+}
+
+// Added 2 additional edge-cases
+#[test]
+fn test_input_output_amount_must_be_positive() {
+    let original_balances = vec![
+        Balance {
+            address: "account1".to_string(),
+            coins: vec![Coin {
+                denom: "denom1".to_string(),
+                amount: 1000000,
+            }],
+        },
+        Balance {
+            address: "account2".to_string(),
+            coins: vec![Coin {
+                denom: "denom1".to_string(),
+                amount: 1000000,
+            }],
+        },
+    ];
+    let definitions = vec![DenomDefinition {
+        denom: "denom1".to_string(),
+        issuer: "issuer_account_A".to_string(),
+        burn_rate: 0.08,
+        commission_rate: 0.12,
+    }];
+    let multi_send_tx = MultiSend {
+        inputs: vec![
+            Balance {
+                address: "account1".to_string(),
+                coins: vec![Coin {
+                    denom: "denom1".to_string(),
+                    amount: -150,
+                }],
+            },
+            Balance {
+                address: "account2".to_string(),
+                coins: vec![Coin {
+                    denom: "denom1".to_string(),
+                    amount: 350,
+                }],
+            },
+        ],
+        outputs: vec![
+            Balance {
+                address: "account_recipient".to_string(),
+                coins: vec![Coin {
+                    denom: "denom1".to_string(),
+                    amount: -300,
+                }],
+            },
+            Balance {
+                address: "issuer_account_A".to_string(),
+                coins: vec![Coin {
+                    denom: "denom1".to_string(),
+                    amount: 500,
+                }],
+            },
+        ],
+    };
+
+    let res = calculate_balance_changes(original_balances, definitions, multi_send_tx);
+
+    match res {
+        Err(value) => assert_eq!(
+            value,
+            CustomError::InvalidInput("coin amount must be positive".to_string())
+        ),
+        Ok(_) => panic!("wrong"),
+    }
+}
+
+#[test]
+fn test_coin_denom_must_be_in_definitions() {
+    let original_balances = vec![
+        Balance {
+            address: "account1".to_string(),
+            coins: vec![Coin {
+                denom: "denom1".to_string(),
+                amount: 1000000,
+            }],
+        },
+        Balance {
+            address: "account2".to_string(),
+            coins: vec![Coin {
+                denom: "denom2".to_string(),
+                amount: 1000000,
+            }],
+        },
+    ];
+    let definitions = vec![
+        DenomDefinition {
+            denom: "denom1".to_string(),
+            issuer: "issuer_account_A".to_string(),
+            burn_rate: 0.08,
+            commission_rate: 0.12,
+        },
+        DenomDefinition {
+            denom: "denom2".to_string(),
+            issuer: "issuer_account_B".to_string(),
+            burn_rate: 1.,
+            commission_rate: 0.,
+        },
+    ];
+    let multi_send_tx = MultiSend {
+        inputs: vec![
+            Balance {
+                address: "account1".to_string(),
+                coins: vec![
+                    Coin {
+                        denom: "denom1".to_string(),
+                        amount: 1000,
+                    },
+                    Coin {
+                        denom: "denom3".to_string(),
+                        amount: 300,
+                    },
+                ],
+            },
+            Balance {
+                address: "account2".to_string(),
+                coins: vec![Coin {
+                    denom: "denom2".to_string(),
+                    amount: 1000,
+                }],
+            },
+        ],
+        outputs: vec![Balance {
+            address: "account_recipient".to_string(),
+            coins: vec![
+                Coin {
+                    denom: "denom1".to_string(),
+                    amount: 1000,
+                },
+                Coin {
+                    denom: "denom2".to_string(),
+                    amount: 1000,
+                },
+                Coin {
+                    denom: "denom3".to_string(),
+                    amount: 300,
+                },
+            ],
+        }],
+    };
+
+    let res = calculate_balance_changes(original_balances, definitions, multi_send_tx);
+
+    match res {
+        Err(value) => assert_eq!(
+            value,
+            CustomError::InvalidInput("denom `denom3` not found.".to_string())
+        ),
+        Ok(_) => panic!("wrong"),
+    }
 }
