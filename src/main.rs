@@ -1,5 +1,8 @@
 use std::collections::HashMap;
 
+use rust_decimal::prelude::*;
+use rust_decimal::Decimal;
+
 fn main() {
     println!("Hello, Coreum!");
 
@@ -42,7 +45,7 @@ impl MultiSend {
         &self,
         definition: &DenomDefinition,
         changes: &mut HashMap<(String, String), i128>,
-    ) {
+    ) -> Result<(), String> {
         let non_issuer_input_sum = self.inputs.get_filtered_coin_sum(definition);
         let non_issuer_output_sum = self.outputs.get_filtered_coin_sum(definition);
 
@@ -52,31 +55,49 @@ impl MultiSend {
             (non_issuer_output_sum, non_issuer_input_sum)
         };
 
+        let burn_rate =
+            Decimal::from_f64(definition.burn_rate).ok_or("Decimal issue".to_string())?;
+        let commission_rate =
+            Decimal::from_f64(definition.commission_rate).ok_or("Decimal issue".to_string())?;
+
         for input in &self.inputs {
             if let Some(coin) = input.coins.find_coin(&definition.denom) {
-                let (bunt, commission) = if denominate == numerate {
-                    (
-                        (definition.burn_rate * coin.amount as f64).ceil() as i128,
-                        (definition.commission_rate * coin.amount as f64).ceil() as i128,
-                    )
-                } else {
-                    (
-                        (coin.amount as f64 * numerate as f64 / denominate as f64
-                            * definition.burn_rate)
-                            .ceil() as i128,
-                        (coin.amount as f64 * numerate as f64 / denominate as f64
-                            * definition.commission_rate)
-                            .ceil() as i128,
-                    )
+                let amount = Decimal::from_i128(coin.amount).ok_or("Decimal issue".to_string())?;
+                let mut burnt = amount.saturating_mul(burn_rate);
+                let mut commission = amount.saturating_mul(commission_rate);
+
+                if denominate != numerate {
+                    let numerate =
+                        Decimal::from_i128(numerate).ok_or("Decimal issue".to_string())?;
+                    let denominate =
+                        Decimal::from_i128(denominate).ok_or("Decimal issue".to_string())?;
+
+                    burnt = burnt
+                        .saturating_mul(numerate)
+                        .checked_div(denominate)
+                        .ok_or("Calculation failure".to_string())?;
+
+                    commission = commission
+                        .saturating_mul(numerate)
+                        .checked_div(denominate)
+                        .ok_or("Calculation failure".to_string())?;
                 };
 
                 let input_key = (input.address.clone(), definition.denom.clone());
                 let output_key = (definition.issuer.clone(), definition.denom.clone());
 
-                *changes.entry(input_key.clone()).or_insert(0) -= bunt + commission + coin.amount;
+                let burnt = burnt.ceil().to_i128().ok_or("Decimal issue".to_string())?;
+                let commission = commission
+                    .ceil()
+                    .to_i128()
+                    .ok_or("Decimal issue".to_string())?;
+
+                *changes.entry(input_key.clone()).or_insert(0) -= burnt + commission + coin.amount;
                 *changes.entry(output_key.clone()).or_insert(0) += commission;
             }
         }
+
+        Ok(())
     }
 
     fn process_output(
@@ -100,7 +121,7 @@ impl MultiSend {
     ) -> Result<(), String> {
         for definition in definitions {
             self.validate_inout(definition)?;
-            self.process_input(definition, changes);
+            self.process_input(definition, changes)?;
             self.process_output(definition, changes);
         }
 
@@ -543,8 +564,6 @@ fn test_rounding_up() {
     };
 
     let res = calculate_balance_changes(original_balances, definitions, multi_send_tx).unwrap();
-
-    println!("{:?}", res);
 
     let account1 = res.iter().find(|e| e.address == "account1").unwrap();
 
