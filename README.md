@@ -304,7 +304,7 @@ ERROR // notice that input and output does not match
 
 ```
 
-Example 4 (demonstrate rounding up)
+Example 5 (demonstrate rounding up)
 ```
 original_balances [
     "account1" = {
@@ -393,4 +393,139 @@ balance_changes = [
             ]
         }
 ]
+```
+
+Example 6 (input/output amount must be positive)
+```
+original_balances [
+    "account1" = {
+        "denom1":1000_000
+    }
+    "account2" = {
+        "denom1":1000_000
+    }
+]
+
+definitions = [
+     {
+        denom: "denom1",
+        issuer: "issuer_account_A",
+        burn_rate: 0.08,
+        commission_rate: 0.12,
+    }
+]
+
+multi_send = {
+    inputs = [
+        {
+            address: "account1"
+            coins: [
+                {
+                    "denom1": -150 
+                }
+            ]
+        }
+        {
+            address: "account2"
+            coins: [
+                {
+                    "denom1": 350 
+                }
+            ]
+        }
+
+    ]
+
+    outputs = [
+        {
+            address: "account_recipient"
+            coins: [
+                {
+                    "denom1": -300
+                }
+            ]
+        }
+        {
+            address: "issuer_account_A"
+            coins: [
+                {
+                    "denom1": 500
+                }
+            ]
+        }
+    ]
+}
+
+the output of the function will be:
+
+ERROR // Invalid input: coin amount must be positive
+```
+
+Example 7 (denom existence)
+```
+original_balances [
+    "account1" = {
+        "denom1":1000_000,
+        "denom2":1000_000,
+    }
+    "account2" = {
+        "denom1":1000_000
+    }
+]
+
+definitions = [
+     {
+        denom: "denom1",
+        issuer: "issuer_account_A",
+        burn_rate: 0.08,
+        commission_rate: 0.12,
+    }
+]
+
+multi_send = {
+    inputs = [
+        {
+            address: "account1"
+            coins: [
+                {
+                    "denom1": 650,
+                    "denom3": 300
+                }
+            ]
+        }
+        {
+            address: "account2"
+            coins: [
+                {
+                    "denom1": 350 
+                }
+            ]
+        }
+
+    ]
+
+    outputs = [
+        {
+            address: "account_recipient"
+            coins: [
+                {
+                    "denom1": 500,
+                    "denom3": 300
+                }
+            ]
+        }
+        {
+            address: "issuer_account_A"
+            coins: [
+                {
+                    "denom1": 500
+                }
+            ]
+        }
+    ]
+}
+
+the output of the function will be:
+
+ERROR // Invalid input: denom `denom3` not found
 ```

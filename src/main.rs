@@ -26,7 +26,7 @@ enum CustomError {
     CalculationFailure,
     #[error("Insufficient balance")]
     InsufficientBalance,
-    #[error("Invalid input {0}")]
+    #[error("Invalid input: {0}")]
     InvalidInput(String),
 }
 
@@ -350,6 +350,7 @@ fn calculate_balance_changes(
     Ok(balances_changes)
 }
 
+// Example 1
 #[test]
 fn test_no_issuer_on_sender_or_receiver() {
     let original_balances = vec![
@@ -424,6 +425,7 @@ fn test_no_issuer_on_sender_or_receiver() {
     assert_eq!(account1_denom1.amount, -1200);
 }
 
+// Example 2
 #[test]
 fn test_issuer_on_sender_or_receiver() {
     let original_balances = vec![
@@ -493,6 +495,7 @@ fn test_issuer_on_sender_or_receiver() {
     assert_eq!(account1_denom1.amount, -715);
 }
 
+// Example 3
 #[test]
 fn test_not_enough_balance() {
     let original_balances = vec![Balance {
@@ -530,6 +533,7 @@ fn test_not_enough_balance() {
     }
 }
 
+// Example 4
 #[test]
 fn test_input_output_mismatch() {
     let original_balances = vec![Balance {
@@ -570,6 +574,7 @@ fn test_input_output_mismatch() {
     }
 }
 
+// Example 5
 #[test]
 fn test_rounding_up() {
     let original_balances = vec![
@@ -646,6 +651,7 @@ fn test_rounding_up() {
 }
 
 // Added 2 additional edge-cases
+// Example 6
 #[test]
 fn test_input_output_amount_must_be_positive() {
     let original_balances = vec![
@@ -716,15 +722,22 @@ fn test_input_output_amount_must_be_positive() {
     }
 }
 
+// Example 7
 #[test]
 fn test_coin_denom_must_be_in_definitions() {
     let original_balances = vec![
         Balance {
             address: "account1".to_string(),
-            coins: vec![Coin {
-                denom: "denom1".to_string(),
-                amount: 1000000,
-            }],
+            coins: vec![
+                Coin {
+                    denom: "denom1".to_string(),
+                    amount: 1000000,
+                },
+                Coin {
+                    denom: "denom3".to_string(),
+                    amount: 1000000,
+                },
+            ],
         },
         Balance {
             address: "account2".to_string(),
