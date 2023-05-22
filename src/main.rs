@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use rust_decimal::prelude::*;
-use rust_decimal::Decimal;
+use thiserror::Error;
 
 fn main() {
     println!("Hello, Coreum!");
@@ -14,6 +14,18 @@ fn main() {
             outputs: vec![],
         },
     );
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+enum CustomError {
+    #[error("Input and output mismatch")]
+    InOutMismatch,
+    #[error("Decimal conversion error")]
+    DecimalConversion,
+    #[error("Calculation failure")]
+    CalculationFailure,
+    #[error("Insufficient balance")]
+    InsufficientBalance,
 }
 
 // A user can submit a `MultiSend` transaction (similar to bank.MultiSend in cosmos sdk) to transfer multiple
@@ -30,12 +42,12 @@ struct MultiSend {
 }
 
 impl MultiSend {
-    fn validate_inout(&self, definition: &DenomDefinition) -> Result<(), String> {
+    fn validate_inout(&self, definition: &DenomDefinition) -> Result<(), CustomError> {
         let input_sum = self.inputs.get_coin_sum(&definition.denom);
         let output_sum = self.outputs.get_coin_sum(&definition.denom);
 
         if input_sum != output_sum {
-            return Err("Input and output mismatch".to_string());
+            return Err(CustomError::InOutMismatch);
         }
 
         Ok(())
@@ -45,7 +57,7 @@ impl MultiSend {
         &self,
         definition: &DenomDefinition,
         changes: &mut HashMap<(String, String), i128>,
-    ) -> Result<(), String> {
+    ) -> Result<(), CustomError> {
         let non_issuer_input_sum = self.inputs.get_filtered_coin_sum(definition);
         let non_issuer_output_sum = self.outputs.get_filtered_coin_sum(definition);
 
@@ -56,41 +68,45 @@ impl MultiSend {
         };
 
         let burn_rate =
-            Decimal::from_f64(definition.burn_rate).ok_or("Decimal issue".to_string())?;
+            Decimal::from_f64(definition.burn_rate).ok_or(CustomError::DecimalConversion)?;
         let commission_rate =
-            Decimal::from_f64(definition.commission_rate).ok_or("Decimal issue".to_string())?;
+            Decimal::from_f64(definition.commission_rate).ok_or(CustomError::DecimalConversion)?;
 
         for input in &self.inputs {
             if let Some(coin) = input.coins.find_coin(&definition.denom) {
-                let amount = Decimal::from_i128(coin.amount).ok_or("Decimal issue".to_string())?;
+                let amount =
+                    Decimal::from_i128(coin.amount).ok_or(CustomError::DecimalConversion)?;
                 let mut burnt = amount.saturating_mul(burn_rate);
                 let mut commission = amount.saturating_mul(commission_rate);
 
                 if denominate != numerate {
                     let numerate =
-                        Decimal::from_i128(numerate).ok_or("Decimal issue".to_string())?;
+                        Decimal::from_i128(numerate).ok_or(CustomError::DecimalConversion)?;
                     let denominate =
-                        Decimal::from_i128(denominate).ok_or("Decimal issue".to_string())?;
+                        Decimal::from_i128(denominate).ok_or(CustomError::DecimalConversion)?;
 
                     burnt = burnt
                         .saturating_mul(numerate)
                         .checked_div(denominate)
-                        .ok_or("Calculation failure".to_string())?;
+                        .ok_or(CustomError::CalculationFailure)?;
 
                     commission = commission
                         .saturating_mul(numerate)
                         .checked_div(denominate)
-                        .ok_or("Calculation failure".to_string())?;
+                        .ok_or(CustomError::CalculationFailure)?;
                 };
 
                 let input_key = (input.address.clone(), definition.denom.clone());
                 let output_key = (definition.issuer.clone(), definition.denom.clone());
 
-                let burnt = burnt.ceil().to_i128().ok_or("Decimal issue".to_string())?;
+                let burnt = burnt
+                    .ceil()
+                    .to_i128()
+                    .ok_or(CustomError::DecimalConversion)?;
                 let commission = commission
                     .ceil()
                     .to_i128()
-                    .ok_or("Decimal issue".to_string())?;
+                    .ok_or(CustomError::DecimalConversion)?;
 
                 *changes.entry(input_key.clone()).or_insert(0) -= burnt + commission + coin.amount;
                 *changes.entry(output_key.clone()).or_insert(0) += commission;
@@ -118,7 +134,7 @@ impl MultiSend {
         &self,
         definitions: &[DenomDefinition],
         changes: &mut HashMap<(String, String), i128>,
-    ) -> Result<(), String> {
+    ) -> Result<(), CustomError> {
         for definition in definitions {
             self.validate_inout(definition)?;
             self.process_input(definition, changes)?;
@@ -272,7 +288,7 @@ fn calculate_balance_changes(
     original_balances: Vec<Balance>,
     definitions: Vec<DenomDefinition>,
     multi_send_tx: MultiSend,
-) -> Result<Vec<Balance>, String> {
+) -> Result<Vec<Balance>, CustomError> {
     let mut balances_changes_map: HashMap<(String, String), i128> = HashMap::new();
     multi_send_tx.process(&definitions, &mut balances_changes_map)?;
     let original_balances_map = to_hashmap(&original_balances);
@@ -284,7 +300,7 @@ fn calculate_balance_changes(
 
         let origin = original_balances_map.get(key);
         if origin.is_none() || origin.unwrap() < &(-amount) {
-            return Err("Insufficient balance".to_string());
+            return Err(CustomError::InsufficientBalance);
         }
     }
 
@@ -468,7 +484,7 @@ fn test_not_enough_balance() {
     let res = calculate_balance_changes(original_balances, definitions, multi_send_tx);
 
     match res {
-        Err(value) => assert_eq!(value, "Insufficient balance".to_string()),
+        Err(value) => assert_eq!(value, CustomError::InsufficientBalance),
         Ok(_) => panic!("wrong"),
     }
 }
@@ -508,7 +524,7 @@ fn test_input_output_mismatch() {
     let res = calculate_balance_changes(original_balances, definitions, multi_send_tx);
 
     match res {
-        Err(value) => assert_eq!(value, "Input and output mismatch".to_string()),
+        Err(value) => assert_eq!(value, CustomError::InOutMismatch),
         Ok(_) => panic!("wrong"),
     }
 }
